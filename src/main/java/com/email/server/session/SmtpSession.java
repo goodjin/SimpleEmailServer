@@ -1,8 +1,6 @@
 package com.email.server.session;
 
 import io.netty.channel.Channel;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -10,7 +8,6 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class SmtpSession {
-    private static final Logger logger = LoggerFactory.getLogger(SmtpSession.class);
     private static final AtomicLong sessionCounter = new AtomicLong(0);
 
     private final String sessionId;
@@ -26,7 +23,8 @@ public class SmtpSession {
     private volatile boolean dataMode = false;
 
     public SmtpSession(Channel channel, String serverName) {
-        this.sessionId = "session-" + sessionCounter.incrementAndGet() + "-" + UUID.randomUUID().toString().substring(0, 8);
+        this.sessionId = "session-" + sessionCounter.incrementAndGet() + "-"
+                + UUID.randomUUID().toString().substring(0, 8);
         this.channel = channel;
         this.serverName = serverName;
         this.createdTime = System.currentTimeMillis();
@@ -122,6 +120,10 @@ public class SmtpSession {
 
     public long getIdleTime() {
         return System.currentTimeMillis() - createdTime;
+    }
+
+    public boolean isExpired() {
+        return !isConnected() || getIdleTime() > 300000; // 5 minutes default
     }
 
     @Override

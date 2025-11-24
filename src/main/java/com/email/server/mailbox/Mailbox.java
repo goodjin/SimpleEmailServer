@@ -65,6 +65,6 @@ public class Mailbox {
 
     @Override
     public String toString() {
-        return "Mailbox{username='" + username + "', email='" + email + "', folders=" + folders.size() + "}";
+        return "Mailbox{username='" + getUsername() + "', email='" + email + "', folders=" + folders.size() + "}";
     }
 }

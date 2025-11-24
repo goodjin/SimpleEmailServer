@@ -6,15 +6,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.Reader;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
@@ -25,6 +24,7 @@ public class LocalMailboxStorage implements MailboxStorage {
     private static final String MAILBOX_META_FILE = ".meta";
     private static final String FOLDER_INDEX_FILE = "index";
     private static final String MESSAGE_ID_PREFIX = "MSG";
+    private static final String CONTENT_EXTENSION = ".eml";
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd");
 
     private final String basePath;
@@ -102,7 +102,7 @@ public class LocalMailboxStorage implements MailboxStorage {
             }
 
             // Save .eml file
-            Path emlPath = folderPath.resolve(messageId + ".eml");
+            Path emlPath = folderPath.resolve(messageId + CONTENT_EXTENSION);
             Files.write(emlPath, message.getData().getBytes(StandardCharsets.UTF_8));
 
             // Update index
@@ -127,7 +127,7 @@ public class LocalMailboxStorage implements MailboxStorage {
 
             List<MessageMetadata> metadataList = loadFolderIndex(email, folder);
             for (MessageMetadata metadata : metadataList) {
-                Path emlPath = folderPath.resolve(metadata.getMessageId() + ".eml");
+                Path emlPath = folderPath.resolve(metadata.getMessageId() + CONTENT_EXTENSION);
                 if (Files.exists(emlPath)) {
                     MailMessage message = loadMessage(emlPath, metadata);
                     messages.add(message);
@@ -143,7 +143,7 @@ public class LocalMailboxStorage implements MailboxStorage {
     @Override
     public MailMessage getMessage(String email, String folder, String messageId) throws MailStorageException {
         try {
-            Path emlPath = getFolderPath(email, folder).resolve(messageId + ".eml");
+            Path emlPath = getFolderPath(email, folder).resolve(messageId + CONTENT_EXTENSION);
             if (!Files.exists(emlPath)) {
                 return null;
             }
@@ -167,12 +167,12 @@ public class LocalMailboxStorage implements MailboxStorage {
     @Override
     public boolean deleteMessage(String email, String folder, String messageId) throws MailStorageException {
         try {
-            Path emlPath = getFolderPath(email, folder).resolve(messageId + ".eml");
+            Path emlPath = getFolderPath(email, folder).resolve(messageId + CONTENT_EXTENSION);
             boolean deleted = Files.deleteIfExists(emlPath);
 
             if (deleted) {
                 removeFromFolderIndex(email, folder, messageId);
-                logger.info("Deleted message {} from {}/{}", messageId, username, folder);
+                logger.info("Deleted message {} from {}/{}", messageId, email, folder);
             }
 
             return deleted;
@@ -232,7 +232,7 @@ public class LocalMailboxStorage implements MailboxStorage {
 
             // Update mailbox metadata
             saveMailboxMetadata(mailbox);
-            logger.info("Created folder {}/{}", username, folderName);
+            logger.info("Created folder {}/{}", email, folderName);
         } catch (IOException e) {
             throw new MailStorageException("Failed to create folder: " + folderName, e);
         }
@@ -265,7 +265,7 @@ public class LocalMailboxStorage implements MailboxStorage {
 
             // Update mailbox metadata
             saveMailboxMetadata(mailbox);
-            logger.info("Deleted folder {}/{}", username, folderName);
+            logger.info("Deleted folder {}/{}", email, folderName);
         } catch (IOException e) {
             throw new MailStorageException("Failed to delete folder: " + folderName, e);
         }
@@ -322,20 +322,20 @@ public class LocalMailboxStorage implements MailboxStorage {
     }
 
     private Mailbox loadMailbox(String email) throws IOException {
-        Path metaPath = getMailboxPath(username).resolve(MAILBOX_META_FILE);
+        Path metaPath = getMailboxPath(email).resolve(MAILBOX_META_FILE);
         Properties props = new Properties();
 
         try (Reader reader = Files.newBufferedReader(metaPath)) {
             props.load(reader);
         }
 
-        String email = props.getProperty("email");
+        String storedEmail = props.getProperty("email");
         String createdTimeStr = props.getProperty("createdTime");
         LocalDateTime createdTime = LocalDateTime.parse(createdTimeStr);
         String foldersStr = props.getProperty("folders", "INBOX,Sent,Drafts,Trash");
         Set<String> folders = new HashSet<>(Arrays.asList(foldersStr.split(",")));
 
-        return new Mailbox(email, email, createdTime, folders);
+        return new Mailbox(storedEmail, null, createdTime, folders);
     }
 
     private void loadExistingMailboxes() throws IOException {
@@ -382,10 +382,10 @@ public class LocalMailboxStorage implements MailboxStorage {
 
             MessageMetadata newMeta = new MessageMetadata(
                     messageId,
-                    message.getSender(),
+                    message.getFrom(),
                     extractSubject(message.getData()),
-                    message.getData().length(),
                     LocalDateTime.now(),
+                    (long) message.getData().length(),
                     new HashSet<>());
             metadata.add(newMeta);
 
@@ -429,7 +429,7 @@ public class LocalMailboxStorage implements MailboxStorage {
             }
 
             // Load from disk
-            Path indexPath = getFolderPath(email, folder).resolve("index");
+            Path indexPath = getFolderPath(email, folder).resolve(FOLDER_INDEX_FILE);
             List<MessageMetadata> metadata = new ArrayList<>();
 
             if (Files.exists(indexPath)) {
@@ -470,7 +470,7 @@ public class LocalMailboxStorage implements MailboxStorage {
 
         lock.writeLock().lock();
         try {
-            Path indexPath = getFolderPath(email, folder).resolve("index");
+            Path indexPath = getFolderPath(email, folder).resolve(FOLDER_INDEX_FILE);
             List<String> lines = metadataList.stream()
                     .map(meta -> String.format("%s|%s|%s|%d|%s|%s",
                             meta.getMessageId(),
@@ -488,39 +488,6 @@ public class LocalMailboxStorage implements MailboxStorage {
             logger.debug("Saved and cached index for {} ({} messages)", cacheKey, metadataList.size());
         } finally {
             lock.writeLock().unlock();
-        }
-    }
-
-    private String formatIndexLine(MessageMetadata metadata) {
-        return String.format("%s|%s|%s|%s|%d|%s",
-                metadata.getMessageId(),
-                metadata.getFrom(),
-                metadata.getSubject(),
-                metadata.getReceivedTime().toString(),
-                metadata.getSize(),
-                String.join(",", metadata.getFlags()));
-    }
-
-    private MessageMetadata parseIndexLine(String line) {
-        try {
-            String[] parts = line.split("\\|", -1);
-            if (parts.length < 5) {
-                return null;
-            }
-
-            String messageId = parts[0];
-            String from = parts[1];
-            String subject = parts[2];
-            LocalDateTime receivedTime = LocalDateTime.parse(parts[3]);
-            long size = Long.parseLong(parts[4]);
-            Set<String> flags = parts.length > 5 && !parts[5].isEmpty()
-                    ? new HashSet<>(Arrays.asList(parts[5].split(",")))
-                    : new HashSet<>();
-
-            return new MessageMetadata(messageId, from, subject, receivedTime, size, flags);
-        } catch (Exception e) {
-            logger.error("Failed to parse index line: " + line, e);
-            return null;
         }
     }
 

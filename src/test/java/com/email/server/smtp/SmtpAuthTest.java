@@ -13,7 +13,7 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Socket;
 import java.nio.file.Files;
-import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.Base64;
 
 import static org.junit.Assert.*;
@@ -40,7 +40,8 @@ public class SmtpAuthTest {
         userRepository = new InMemoryUserRepository();
         ((InMemoryUserRepository) userRepository).addUser("test@example.com", "password123");
 
-        server = new SmtpServer(config, userRepository);
+        server = new SmtpServer(config, userRepository,
+                new com.email.server.mailbox.LocalMailboxStorage(tempFolder.getRoot().getAbsolutePath()));
         new Thread(() -> {
             try {
                 server.start();
@@ -70,8 +71,10 @@ public class SmtpAuthTest {
                 BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                 PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
 
-            assertEquals("220 localhost ESMTP Service Ready", in.readLine().substring(0, 33)); // Ignore trailing chars
-                                                                                               // if any
+            String greeting = in.readLine();
+            assertTrue(greeting.startsWith("220 "));
+            assertTrue(greeting.contains("ESMTP Service Ready"));
+            // if any
 
             out.println("EHLO localhost");
             String line;

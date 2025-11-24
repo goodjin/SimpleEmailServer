@@ -1,7 +1,7 @@
 package com.email.server.imap;
 
 import com.email.server.config.ServerConfig;
-import com.email.server.storage.LocalMailStorage;
+import com.email.server.mailbox.LocalMailboxStorage;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import org.junit.After;
@@ -22,7 +22,7 @@ import static org.junit.Assert.*;
 
 public class ImapServerTest {
     private ImapServer server;
-    private LocalMailStorage storage;
+    private LocalMailboxStorage storage;
     private Path tempDir;
     private int port = 11143;
 
@@ -47,12 +47,13 @@ public class ImapServerTest {
         Config config = ConfigFactory.parseMap(configMap);
         ServerConfig serverConfig = new ServerConfig(config);
 
-        storage = new LocalMailStorage(tempDir.toString());
+        storage = new LocalMailboxStorage(tempDir.toString());
         storage.initialize();
 
         // Add a test message
-        storage.saveMail("sender@example.com", Collections.singletonList("user@example.com"),
-                "Subject: Test\r\n\r\nHello World");
+        storage.saveMessage("user@example.com", "INBOX",
+                new com.email.server.storage.MailMessage(null, "sender@example.com",
+                        Collections.singletonList("user@example.com"), "Subject: Test\r\n\r\nHello World"));
 
         server = new ImapServer(serverConfig, storage);
         server.start();

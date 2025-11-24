@@ -40,10 +40,15 @@ public class SmtpServer {
     private ChannelFuture channelFuture;
 
     public SmtpServer(ServerConfig config) {
+        this(config, new FileBasedUserRepository(config.getConfig()),
+                new LocalMailboxStorage(config.getMailboxesPath()));
+    }
+
+    public SmtpServer(ServerConfig config, UserRepository userRepository, MailboxStorage mailboxStorage) {
         this.config = config;
-        this.userRepository = new FileBasedUserRepository(config.getConfig());
+        this.userRepository = userRepository;
+        this.mailboxStorage = mailboxStorage;
         this.sessionManager = new SessionManager(config.getMaxConnections());
-        this.mailboxStorage = new LocalMailboxStorage(config.getMailboxesPath());
         this.deliveryService = new InMemoryDeliveryService();
         this.bossGroup = new NioEventLoopGroup(config.getIoThreads());
         this.workerGroup = new NioEventLoopGroup(config.getWorkerThreads());
@@ -83,7 +88,7 @@ public class SmtpServer {
 
                             // Add SMTP handler
                             pipeline.addLast(businessGroup,
-                                    new SmtpHandler(sessionManager, mailboxStorage, deliveryService, config,
+                                    new SmtpHandler(sessionManager, mailboxStorage, config,
                                             userRepository));
                         }
                     });

@@ -29,7 +29,7 @@ public class SessionManager {
         activeSessions.incrementAndGet();
 
         logger.info("Created new session: {} (active sessions: {})",
-                   session.getSessionId(), activeSessions.get());
+                session.getSessionId(), activeSessions.get());
         return session;
     }
 
@@ -38,7 +38,7 @@ public class SessionManager {
         if (session != null) {
             activeSessions.decrementAndGet();
             logger.info("Removed session: {} (active sessions: {})",
-                       sessionId, activeSessions.get());
+                    sessionId, activeSessions.get());
         }
     }
 
@@ -55,13 +55,10 @@ public class SessionManager {
     }
 
     public void cleanupExpiredSessions(long maxIdleTime) {
-        long currentTime = System.currentTimeMillis();
         sessions.entrySet().removeIf(entry -> {
             SmtpSession session = entry.getValue();
-            if (!session.isConnected() || session.getIdleTime() > maxIdleTime) {
-                logger.debug("Cleaning up expired session: {}", session.getSessionId());
-                session.close();
-                activeSessions.decrementAndGet();
+            if (session.isExpired()) {
+                logger.debug("Removing expired session: {}", entry.getKey());
                 return true;
             }
             return false;

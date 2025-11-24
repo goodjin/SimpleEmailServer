@@ -1,7 +1,6 @@
 package com.email.server.smtp;
 
 import com.email.server.config.ServerConfig;
-import com.email.server.delivery.MailDeliveryService;
 import com.email.server.session.SessionManager;
 import com.email.server.session.SmtpSession;
 import com.email.server.mailbox.MailboxStorage;
@@ -32,7 +31,6 @@ public class SmtpHandler extends SimpleChannelInboundHandler<String> {
 
     private final SessionManager sessionManager;
     private final MailboxStorage mailboxStorage;
-    private final MailDeliveryService deliveryService;
     private final ServerConfig config;
     private final UserRepository userRepository;
 
@@ -42,11 +40,9 @@ public class SmtpHandler extends SimpleChannelInboundHandler<String> {
     private String authUsername;
 
     public SmtpHandler(SessionManager sessionManager, MailboxStorage mailboxStorage,
-            MailDeliveryService deliveryService, ServerConfig config,
-            UserRepository userRepository) {
+            ServerConfig config, UserRepository userRepository) {
         this.sessionManager = sessionManager;
         this.mailboxStorage = mailboxStorage;
-        this.deliveryService = deliveryService;
         this.config = config;
         this.userRepository = userRepository;
     }
@@ -142,6 +138,7 @@ public class SmtpHandler extends SimpleChannelInboundHandler<String> {
             ctx.writeAndFlush("503 Already authenticated\r\n");
             return;
         }
+        logger.info("Handling AUTH. UserRepository class: {}", userRepository.getClass().getName());
 
         String[] parts = args.split("\\s+");
         String mechanism = parts[0].toUpperCase();

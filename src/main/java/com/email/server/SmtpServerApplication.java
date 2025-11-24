@@ -13,9 +13,17 @@ public class SmtpServerApplication {
     public static void main(String[] args) {
         try {
             ServerConfig config = ServerConfig.load();
-            SmtpServer smtpServer = new SmtpServer(config);
-            Pop3Server pop3Server = new Pop3Server(config, smtpServer.getMailboxStorage());
-            ImapServer imapServer = new ImapServer(config, smtpServer.getMailboxStorage());
+
+            com.email.server.user.UserRepository userRepository = new com.email.server.user.InMemoryUserRepository();
+            // Add default user for testing/demo
+            ((com.email.server.user.InMemoryUserRepository) userRepository).addUser("user@example.com", "password");
+
+            com.email.server.mailbox.MailboxStorage mailboxStorage = new com.email.server.mailbox.LocalMailboxStorage(
+                    config.getMailStoragePath());
+
+            SmtpServer smtpServer = new SmtpServer(config, userRepository, mailboxStorage);
+            Pop3Server pop3Server = new Pop3Server(config, mailboxStorage);
+            ImapServer imapServer = new ImapServer(config, mailboxStorage);
 
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 logger.info("Shutting down servers...");

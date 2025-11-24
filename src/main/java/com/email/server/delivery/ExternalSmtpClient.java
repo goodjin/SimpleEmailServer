@@ -13,7 +13,6 @@ import java.nio.charset.StandardCharsets;
 public class ExternalSmtpClient {
     private static final Logger logger = LoggerFactory.getLogger(ExternalSmtpClient.class);
     private static final int DEFAULT_SMTP_PORT = 25;
-    private static final int CONNECTION_TIMEOUT = 10000; // 10 seconds
     private static final int READ_TIMEOUT = 30000; // 30 seconds
 
     public boolean sendEmail(String mxHost, String from, String to, String data) {
