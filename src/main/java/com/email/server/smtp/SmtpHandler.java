@@ -239,12 +239,34 @@ public class SmtpHandler extends SimpleChannelInboundHandler<String> {
 
         if (args.toUpperCase().startsWith("TO:")) {
             String recipient = args.substring(3).trim().replaceAll("[<>]", "");
+
+            // Extract domain from recipient email
+            String domain = extractDomain(recipient);
+
+            // MX Mode: Check if relay is allowed
+            if (!authenticated && !config.isLocalDomain(domain)) {
+                // Unauthenticated and external domain - reject relay
+                logger.warn("Relay access denied for {} to external domain {}",
+                        session.getClientHostname(), domain);
+                ctx.writeAndFlush("550 5.7.1 Relay access denied\r\n");
+                return;
+            }
+
             session.addRcptTo(recipient);
             state = State.RCPT;
+            logger.debug("Accepted recipient: {} (authenticated={}, local={})",
+                    recipient, authenticated, config.isLocalDomain(domain));
             ctx.writeAndFlush("250 OK\r\n");
         } else {
             ctx.writeAndFlush("501 Syntax error in parameters or arguments\r\n");
         }
+    }
+
+    private String extractDomain(String email) {
+        if (email.contains("@")) {
+            return email.substring(email.lastIndexOf("@") + 1).toLowerCase();
+        }
+        return "";
     }
 
     private void handleData(ChannelHandlerContext ctx) {
@@ -274,22 +296,36 @@ public class SmtpHandler extends SimpleChannelInboundHandler<String> {
                 // Create MailMessage
                 MailMessage message = new MailMessage(null, sender, recipients, data);
 
-                // Save to each recipient's INBOX folder
+                // Route recipients to local or external delivery
+                int localCount = 0;
+                int externalCount = 0;
+
                 for (String recipient : recipients) {
                     try {
-                        // Use full recipient email address for mailbox
                         String recipientEmail = recipient.replaceAll("[<>]", "");
-                        mailboxStorage.saveMessage(recipientEmail, "INBOX", message);
-                        logger.info("Message {} delivered to {}/INBOX", message.getMessageId(), recipientEmail);
+                        String domain = extractDomain(recipientEmail);
+
+                        if (config.isLocalDomain(domain)) {
+                            // Local delivery
+                            mailboxStorage.saveMessage(recipientEmail, "INBOX", message);
+                            logger.info("Local delivery: {} to {}/INBOX", message.getMessageId(), recipientEmail);
+                            localCount++;
+                        } else {
+                            // External delivery
+                            deliverExternalEmail(sender, recipientEmail, data);
+                            logger.info("External delivery queued: {} to {}", message.getMessageId(), recipientEmail);
+                            externalCount++;
+                        }
                     } catch (Exception e) {
                         logger.error("Failed to deliver to " + recipient, e);
                     }
                 }
 
+                logger.info("Message accepted: {} local, {} external", localCount, externalCount);
                 ctx.writeAndFlush("250 OK Message accepted for delivery\r\n");
                 resetState();
             } catch (Exception e) {
-                logger.error("Error saving mail", e);
+                logger.error("Error processing mail", e);
                 ctx.writeAndFlush("451 Local error in processing\r\n");
             }
         } else {
@@ -300,6 +336,32 @@ public class SmtpHandler extends SimpleChannelInboundHandler<String> {
                 session.appendMailData(line);
             }
         }
+    }
+
+    private void deliverExternalEmail(String from, String to, String data) {
+        // Run external delivery in separate thread to avoid blocking
+        new Thread(() -> {
+            try {
+                String domain = extractDomain(to);
+
+                // Lookup MX records
+                com.email.server.delivery.MxLookupService mxLookup = new com.email.server.delivery.MxLookupService();
+                List<String> mxHosts = mxLookup.lookupMxRecords(domain);
+
+                // Try each MX host in order
+                com.email.server.delivery.ExternalSmtpClient smtpClient = new com.email.server.delivery.ExternalSmtpClient();
+                for (String mxHost : mxHosts) {
+                    if (smtpClient.sendEmail(mxHost, from, to, data)) {
+                        logger.info("Successfully delivered external email to {} via {}", to, mxHost);
+                        return;
+                    }
+                }
+
+                logger.error("Failed to deliver external email to {} after trying {} MX hosts", to, mxHosts.size());
+            } catch (Exception e) {
+                logger.error("Error in external delivery to {}: {}", to, e.getMessage());
+            }
+        }).start();
     }
 
     private void resetState() {

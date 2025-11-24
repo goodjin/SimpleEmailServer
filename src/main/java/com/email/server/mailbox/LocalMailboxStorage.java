@@ -5,14 +5,19 @@ import com.email.server.storage.MailStorageException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.*;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class LocalMailboxStorage implements MailboxStorage {
@@ -24,6 +29,10 @@ public class LocalMailboxStorage implements MailboxStorage {
 
     private final String basePath;
     private final Map<String, Mailbox> mailboxCache = new ConcurrentHashMap<>();
+
+    // Index caching with thread-safe locks
+    private final Map<String, List<MessageMetadata>> indexCache = new ConcurrentHashMap<>();
+    private final Map<String, ReadWriteLock> indexLocks = new ConcurrentHashMap<>();
 
     public LocalMailboxStorage(String basePath) {
         this.basePath = basePath;
@@ -364,21 +373,26 @@ public class LocalMailboxStorage implements MailboxStorage {
 
     private void updateFolderIndex(String email, String folder, MailMessage message, String messageId)
             throws IOException {
-        List<MessageMetadata> metadataList = loadFolderIndex(email, folder);
+        String cacheKey = email + "/" + folder;
+        ReadWriteLock lock = indexLocks.computeIfAbsent(cacheKey, k -> new ReentrantReadWriteLock());
 
-        // Extract subject from message data
-        String subject = extractSubject(message.getData());
+        lock.writeLock().lock();
+        try {
+            List<MessageMetadata> metadata = loadFolderIndex(email, folder);
 
-        MessageMetadata metadata = new MessageMetadata(
-                messageId,
-                message.getFrom(),
-                subject,
-                message.getReceivedTime(),
-                message.getSize(),
-                message.getFlags());
+            MessageMetadata newMeta = new MessageMetadata(
+                    messageId,
+                    message.getSender(),
+                    extractSubject(message.getData()),
+                    message.getData().length(),
+                    LocalDateTime.now(),
+                    new HashSet<>());
+            metadata.add(newMeta);
 
-        metadataList.add(metadata);
-        saveFolderIndex(email, folder, metadataList);
+            saveFolderIndex(email, folder, metadata);
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     private void removeFromFolderIndex(String email, String folder, String messageId) throws IOException {
@@ -388,38 +402,92 @@ public class LocalMailboxStorage implements MailboxStorage {
     }
 
     private List<MessageMetadata> loadFolderIndex(String email, String folder) throws IOException {
-        Path indexPath = getFolderPath(email, folder).resolve(FOLDER_INDEX_FILE);
-        if (!Files.exists(indexPath)) {
-            return new ArrayList<>();
+        String cacheKey = email + "/" + folder;
+
+        // Get or create lock for this folder
+        ReadWriteLock lock = indexLocks.computeIfAbsent(cacheKey, k -> new ReentrantReadWriteLock());
+
+        // Try reading from cache first
+        lock.readLock().lock();
+        try {
+            List<MessageMetadata> cached = indexCache.get(cacheKey);
+            if (cached != null) {
+                logger.debug("Index cache hit for {}", cacheKey);
+                return new ArrayList<>(cached); // Return copy for safety
+            }
+        } finally {
+            lock.readLock().unlock();
         }
 
-        List<MessageMetadata> metadataList = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(indexPath)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty() || line.startsWith("#")) {
-                    continue;
-                }
-                MessageMetadata metadata = parseIndexLine(line);
-                if (metadata != null) {
-                    metadataList.add(metadata);
+        // Cache miss - load from disk with write lock
+        lock.writeLock().lock();
+        try {
+            // Double-check cache (another thread might have loaded it)
+            List<MessageMetadata> cached = indexCache.get(cacheKey);
+            if (cached != null) {
+                return new ArrayList<>(cached);
+            }
+
+            // Load from disk
+            Path indexPath = getFolderPath(email, folder).resolve("index");
+            List<MessageMetadata> metadata = new ArrayList<>();
+
+            if (Files.exists(indexPath)) {
+                List<String> lines = Files.readAllLines(indexPath);
+                for (String line : lines) {
+                    if (line.trim().isEmpty() || line.startsWith("#")) {
+                        continue;
+                    }
+                    String[] parts = line.split("\\|", -1);
+                    if (parts.length >= 6) {
+                        MessageMetadata meta = new MessageMetadata(
+                                parts[0], // messageId
+                                parts[1], // from
+                                parts[2], // subject
+                                LocalDateTime.parse(parts[3]), // receivedTime
+                                Long.parseLong(parts[4]), // size
+                                new HashSet<>(Arrays.asList(parts[5].split(","))) // flags
+                        );
+                        metadata.add(meta);
+                    }
                 }
             }
-        }
 
-        return metadataList;
+            // Cache it
+            indexCache.put(cacheKey, new ArrayList<>(metadata));
+            logger.debug("Loaded and cached index for {} ({} messages)", cacheKey, metadata.size());
+
+            return metadata;
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     private void saveFolderIndex(String email, String folder, List<MessageMetadata> metadataList)
             throws IOException {
-        Path indexPath = getFolderPath(email, folder).resolve(FOLDER_INDEX_FILE);
-        try (BufferedWriter writer = Files.newBufferedWriter(indexPath)) {
-            writer.write("# Message Index\n");
-            writer.write("# Format: messageId|from|subject|receivedTime|size|flags\n");
-            for (MessageMetadata metadata : metadataList) {
-                writer.write(formatIndexLine(metadata));
-                writer.write("\n");
-            }
+        String cacheKey = email + "/" + folder;
+        ReadWriteLock lock = indexLocks.computeIfAbsent(cacheKey, k -> new ReentrantReadWriteLock());
+
+        lock.writeLock().lock();
+        try {
+            Path indexPath = getFolderPath(email, folder).resolve("index");
+            List<String> lines = metadataList.stream()
+                    .map(meta -> String.format("%s|%s|%s|%d|%s|%s",
+                            meta.getMessageId(),
+                            meta.getFrom(),
+                            meta.getSubject(),
+                            meta.getSize(),
+                            meta.getReceivedTime().toString(), // Changed to getReceivedTime()
+                            String.join(",", meta.getFlags())))
+                    .collect(Collectors.toList());
+
+            Files.write(indexPath, lines, StandardCharsets.UTF_8);
+
+            // Update cache
+            indexCache.put(cacheKey, new ArrayList<>(metadataList));
+            logger.debug("Saved and cached index for {} ({} messages)", cacheKey, metadataList.size());
+        } finally {
+            lock.writeLock().unlock();
         }
     }
 
